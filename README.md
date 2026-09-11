@@ -49,7 +49,7 @@ Sync never clobbers already-configured values — re-ask them with `ocp set-ctx 
 
 | File | What ocp does |
 | --- | --- |
-| `~/.config/opencode/opencode.jsonc` | provider definitions (models, limits, modalities) |
+| OpenCode config — first existing of `opencode.jsonc` / `opencode.json` / `config.json` in `$OPENCODE_CONFIG_DIR` or `~/.config/opencode` (override: `OCP_CONFIG`) | provider definitions (models, limits, modalities) |
 | `~/.local/share/opencode/auth.json` | API keys per provider id |
 | `~/.hermes/config.yaml` | only the `models:` maps under `custom_providers` — surgical line edits, comments preserved; skipped if Hermes is not installed |
 

@@ -7,7 +7,16 @@ import path from "node:path";
 import os from "node:os";
 import readline from "node:readline/promises";
 
-const CFG = path.join(os.homedir(), ".config/opencode/opencode.jsonc");
+// config file resolution mirrors OpenCode's own discovery (config.ts):
+// OCP_CONFIG override > first existing of opencode.jsonc / opencode.json /
+// config.json in $OPENCODE_CONFIG_DIR or $XDG_CONFIG_HOME/opencode (~/.config/opencode)
+const CFG_DIR = process.env.OPENCODE_CONFIG_DIR || path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "opencode");
+const CFG_CANDIDATES = ["opencode.jsonc", "opencode.json", "config.json"];
+function detectCfg() {
+  const hit = CFG_CANDIDATES.find((f) => existsSync(path.join(CFG_DIR, f)));
+  return path.join(CFG_DIR, hit || CFG_CANDIDATES[0]);
+}
+const CFG = process.env.OCP_CONFIG || detectCfg();
 const AUTH = path.join(os.homedir(), ".local/share/opencode/auth.json");
 const HERMES_CFG = path.join(os.homedir(), ".hermes/config.yaml");
 const HERMES_ENV = path.join(os.homedir(), ".hermes/.env");
@@ -27,10 +36,40 @@ for (let i = 0; i < argv.length; i++) {
 const cmd = pos[0];
 const die = (m) => { console.error("error: " + m); process.exit(1); };
 
+// strip // and /* */ comments outside string literals (.jsonc support)
+function stripJsonComments(s) {
+  let out = "", i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === '"') {
+      out += c; i++;
+      while (i < s.length && s[i] !== '"') {
+        if (s[i] === "\\") { out += s.slice(i, i + 2); i += 2; }
+        else { out += s[i]; i++; }
+      }
+      if (i < s.length) { out += s[i]; i++; }
+    } else if (c === "/" && s[i + 1] === "/") {
+      while (i < s.length && s[i] !== "\n") i++;
+    } else if (c === "/" && s[i + 1] === "*") {
+      const end = s.indexOf("*/", i + 2);
+      i = end === -1 ? s.length : end + 2;
+    } else { out += c; i++; }
+  }
+  return out;
+}
+
 // ---------- store ----------
+let _cfgWarned = false;
+function warnMultiCfg() {
+  if (_cfgWarned || process.env.OCP_CONFIG) return;
+  _cfgWarned = true;
+  const present = CFG_CANDIDATES.filter((f) => existsSync(path.join(CFG_DIR, f)));
+  if (present.length > 1) console.error(`note: multiple config files in ${CFG_DIR} (${present.join(", ")}); OpenCode deep-merges them — ocp edits ${path.basename(CFG)}`);
+}
 const loadCfg = () => {
   if (!existsSync(CFG)) die(`no ${CFG}\nadd a provider first: ocp add <id> <baseURL>`);
-  try { return JSON.parse(readFileSync(CFG, "utf8").replace(/,(\s*[}\]])/g, "$1")); }
+  warnMultiCfg();
+  try { return JSON.parse(stripJsonComments(readFileSync(CFG, "utf8")).replace(/,(\s*[}\]])/g, "$1")); }
   catch (e) { die(`cannot parse ${CFG}: ${e.message}`); }
 };
 const loadAuth = () => (existsSync(AUTH) ? JSON.parse(readFileSync(AUTH, "utf8")) : {});
@@ -70,7 +109,9 @@ Zero dependencies; requires Node >= 18 (built-in fetch).
 Run \`ocp\`, \`ocp help\`, \`-h\` or \`--help\` to see this text again.
 
 Files:
-  config   ~/.config/opencode/opencode.jsonc   provider definitions
+  config   $OPENCODE_CONFIG_DIR or ~/.config/opencode — first existing of
+           opencode.jsonc, opencode.json, config.json (same discovery as
+           OpenCode itself; override with OCP_CONFIG=/path/to/file)
   keys     ~/.local/share/opencode/auth.json   API keys, one per provider id
   hermes   ~/.hermes/config.yaml               custom_providers (if installed)
            ~/.hermes/.env                      key source for Hermes providers
@@ -113,7 +154,7 @@ Commands:
       check (ctx of brand-new models is shown as a guess). With --apply in
       a terminal, ocp may ask interactively about ctx it cannot determine.
       Targets:
-        opencode  providers in opencode.jsonc (default when --provider set)
+        opencode  providers in the OpenCode config file (default when --provider set)
         hermes    custom_providers in ~/.hermes/config.yaml — the offline
                   fallback catalog Hermes shows when a server is down. Only
                   server-reported context lengths are written; guesses never
@@ -163,7 +204,7 @@ Hermes key resolution, first match wins:
 Safety:
   - every write is atomic (tmp file + rename) and preceded by a .bak-ocp-*
     backup; only the last 3 backups per file are kept
-  - opencode.jsonc is validated after each write; on errors they are
+  - the config file is validated after each write; on errors they are
     reported and ocp exits non-zero
 
 Examples:
