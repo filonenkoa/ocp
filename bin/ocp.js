@@ -66,10 +66,14 @@ function warnMultiCfg() {
   const present = CFG_CANDIDATES.filter((f) => existsSync(path.join(CFG_DIR, f)));
   if (present.length > 1) console.error(`note: multiple config files in ${CFG_DIR} (${present.join(", ")}); OpenCode deep-merges them — ocp edits ${path.basename(CFG)}`);
 }
+let _cfgHadComments = false, _cmtWarned = false;
 const loadCfg = () => {
   if (!existsSync(CFG)) die(`no ${CFG}\nadd a provider first: ocp add <id> <baseURL>`);
   warnMultiCfg();
-  try { return JSON.parse(stripJsonComments(readFileSync(CFG, "utf8")).replace(/,(\s*[}\]])/g, "$1")); }
+  const raw = readFileSync(CFG, "utf8");
+  const cleaned = stripJsonComments(raw);
+  _cfgHadComments = cleaned.length !== raw.length;
+  try { return JSON.parse(cleaned.replace(/,(\s*[}\]])/g, "$1")); }
   catch (e) { die(`cannot parse ${CFG}: ${e.message}`); }
 };
 const loadAuth = () => (existsSync(AUTH) ? JSON.parse(readFileSync(AUTH, "utf8")) : {});
@@ -91,7 +95,10 @@ function saveJson(file, obj) {
   writeFileSync(tmp, JSON.stringify(obj, null, 2) + "\n");
   renameSync(tmp, file);
 }
-const saveCfg = (c) => saveJson(CFG, c);
+const saveCfg = (c) => {
+  if (_cfgHadComments && !_cmtWarned) { _cmtWarned = true; console.error("note: comments in the config file are not preserved by ocp writes"); }
+  saveJson(CFG, c);
+};
 const saveAuth = (a) => saveJson(AUTH, a);
 
 // numeric flag: undefined stays undefined, anything non-numeric is an error
@@ -158,7 +165,8 @@ Commands:
         hermes    custom_providers in ~/.hermes/config.yaml — the offline
                   fallback catalog Hermes shows when a server is down. Only
                   server-reported context lengths are written; guesses never
-                  go into Hermes.
+                  go into Hermes. Model entries keep only context_length —
+                  any other fields are dropped (with a warning).
         all       both (default)
       Options: --provider ID (opencode target only), --ctx N, --output N.
 
@@ -408,7 +416,11 @@ function hermesEnv() {
   return _henv;
 }
 
-const deq = (s) => s.replace(/^(['"])(.*)\1$/, "$2");
+// unquote a YAML scalar; double-quoted strings are JSON (yq quotes via JSON.stringify)
+const deq = (s) => {
+  if (/^".*"$/.test(s)) { try { return JSON.parse(s); } catch {} }
+  return s.replace(/^(['"])(.*)\1$/, "$2");
+};
 
 // quote a YAML scalar only when needed; JSON quoting is always valid YAML
 const yq = (s) => (/^[A-Za-z0-9_.@-]/.test(s) && !/: /.test(s) && !/^\s|\s$/.test(s) && !s.includes("#") ? s : JSON.stringify(s));
@@ -461,21 +473,24 @@ function parseModelsBlock(lines, a, b) {
     if (l.trim() === "") { i++; continue; }
     const m = l.match(/^ {6}(.+?):(?:\s+(\{.*\}))?\s*$/);
     if (!m) { i++; continue; }
-    const id = m[1].replace(/^(['"])(.*)\1$/, "$2");
-    let ctx = null;
+    const id = deq(m[1]);
+    let ctx = null, extra = false; // extra: fields ocp does not preserve (only context_length is kept)
     if (m[2]) {
       const ic = m[2].match(/context_length:\s*(\d+)/);
       if (ic) ctx = parseInt(ic[1]);
+      const rest = m[2].replace(/^\{\s*|\s*\}$/g, "").replace(/"?context_length"?\s*:\s*\d+/g, "");
+      if (rest.replace(/[,\s]/g, "") !== "") extra = true;
     } else {
       for (let k = i + 1; k < b; k++) {
         const cl = lines[k].match(/^ {8}context_length:\s*(\d+)\s*$/);
-        if (cl) { ctx = parseInt(cl[1]); break; }
+        if (cl) { ctx = parseInt(cl[1]); continue; }
         if (/^ {6}\S/.test(lines[k])) break;
+        if (/^ {8,}\S/.test(lines[k])) extra = true;
       }
     }
     let e = i + 1;
     while (e < b && lines[e].trim() !== "" && /^ {8,}\S/.test(lines[e])) e++;
-    models.push({ id, ctx });
+    models.push({ id, ctx, extra });
     i = e;
   }
   return models;
@@ -538,6 +553,8 @@ async function syncHermes({ apply, ocCfg, ocAuth }) {
     for (const a of removed) console.log(`    - ${a.id} (no longer on server)`);
     for (const c of ctxCh) console.log(`    ~ ctx ${c.id}: ${curIds.get(c.id).ctx} -> ${c.ctx}`);
     if (!added.length && !removed.length && !ctxCh.length) { console.log("    in sync"); continue; }
+    for (const m of e.models.filter((m) => m.extra))
+      console.log(`    note: ${m.id} has fields other than context_length — they will be dropped on --apply`);
     changes += added.length + removed.length + ctxCh.length;
     edits.push({ e, live });
   }
@@ -687,6 +704,7 @@ async function cmdAdd(id, url) {
   const ctxMap = await resolveCtxs(server, { ctxFlag, mode, notes, existing: Object.keys(oldProv.models || {}) });
   const res = reconcile(oldProv.models || {}, server, { out, ctxMap, notes });
   const prov = {
+    ...oldProv, // preserve any user-added provider-level fields
     name: flags.name || oldProv.name || id,
     npm: oldProv.npm || "@ai-sdk/openai-compatible",
     options: { ...(oldProv.options || {}), baseURL: base },
