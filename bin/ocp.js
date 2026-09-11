@@ -66,80 +66,105 @@ const numFlag = (v) => {
 // ---------- help ----------
 const HELP = `ocp — manage local model providers for OpenCode (and Hermes Agent)
 
-Requires Node >= 18. No other dependencies.
+Zero dependencies; requires Node >= 18 (built-in fetch).
+Run \`ocp\`, \`ocp help\`, \`-h\` or \`--help\` to see this text again.
 
 Files:
-  config  ~/.config/opencode/opencode.jsonc
-  keys    ~/.local/share/opencode/auth.json
-  hermes  ~/.hermes/config.yaml (custom_providers, if Hermes is installed)
+  config   ~/.config/opencode/opencode.jsonc   provider definitions
+  keys     ~/.local/share/opencode/auth.json   API keys, one per provider id
+  hermes   ~/.hermes/config.yaml               custom_providers (if installed)
+           ~/.hermes/.env                      key source for Hermes providers
 
 Commands:
   ocp list
-      List configured providers, model counts and key status.
-
-  ocp help
-      Show this help.
+      List configured providers with model counts and key status.
 
   ocp add <id> <baseURL> [options]
-      Register (or update) a provider. The server type is auto-detected:
+      Register or update a provider. The server type is auto-detected:
       llama.cpp (preset --ctx-size + per-model architecture), LM Studio
-      (/api/v0/models), Unsloth UI (login + persistent API key), or a
-      generic OpenAI-compatible server.
+      (/api/v0/models), Unsloth UI (login + persistent API key) or any
+      OpenAI-compatible server.
       Upsert semantics: models missing on the server are removed, new ones
-      added, server-authoritative ctx/modalities applied. Configured values
-      are kept when the server reports nothing.
+      added, server-authoritative ctx/modalities applied; configured values
+      are kept when the server reports nothing. Re-running add against a
+      moved server re-points baseURL and reconciles the model list.
+      Key resolution: --key K > existing auth.json key for <id>. For an
+      Unsloth UI with neither, pass --username U --password P: ocp logs in
+      and creates (and stores) a persistent API key named after <id>.
       Options:
-        --name N          display name (default: <id>)
-        --key K           API key; saved to auth.json under <id>
-        --username U      Unsloth UI login (together with --password):
-        --password P          ocp logs in and creates a persistent API key
+        --name N          display name (default: existing value, else <id>)
+        --key K           API key; stored to auth.json under <id>
+        --username U      Unsloth UI login (together with --password P)
+        --password P
         --ctx N           ctx for models whose server reports none
-                          (0 = omit limit entirely). Without it, ocp asks
-                          interactively when run in a terminal.
-        --output N        max output tokens for new models (default 65536)
-        --dry-run         print what would change, write nothing
+                          (0 = omit the limit). Without it, ocp asks
+                          interactively in a terminal; with --dry-run a
+                          guess is shown instead.
+        --output N        max output tokens written into new limits
+                          (default 65536)
+        --dry-run         report what would change; writes nothing and
+                          creates no API key
 
   ocp sync [--apply] [--target all|opencode|hermes] [--provider ID]
       Check configured providers against their servers: new/removed models,
-      ctx changes, modality corrections. Offline or auth-failing servers
-      are reported and skipped. Without --apply nothing is written — this
-      is the safe default for a status check.
+      ctx changes, modality corrections. Offline or auth-failing servers are
+      reported and skipped; disabled_providers in the config are ignored.
+      Without --apply nothing is written — the safe default for a status
+      check (ctx of brand-new models is shown as a guess). With --apply in
+      a terminal, ocp may ask interactively about ctx it cannot determine.
       Targets:
-        opencode  providers in opencode.jsonc (default when --provider is set)
-        hermes    custom_providers in ~/.hermes/config.yaml: their models-map
-                  is the offline fallback catalog Hermes shows when a
-                  server is down. ocp keeps it current. Only server-reported
-                  context lengths are written (context_length); guessed
-                  values are never written into Hermes. A .bak-ocp-* backup
-                  is made before every write.
+        opencode  providers in opencode.jsonc (default when --provider set)
+        hermes    custom_providers in ~/.hermes/config.yaml — the offline
+                  fallback catalog Hermes shows when a server is down. Only
+                  server-reported context lengths are written; guesses never
+                  go into Hermes.
         all       both (default)
-      --provider ID filters the opencode target only.
-      Options: --provider ID, --ctx N, --output N (same as add).
+      Options: --provider ID (opencode target only), --ctx N, --output N.
 
   ocp set-ctx <provider>
       Interactively re-ask the context window for every model whose server
-      reports no ctx. Default (Enter) is the best known value (trained
-      window from server metadata when available, else a heuristic on the
-      model id); "k" keeps the currently configured value, 0 omits the
-      limit. Use this to fix values that were guessed or changed on the
-      server side. Needs a terminal.
+      reports no ctx (models absent from the server are skipped). Enter =
+      best known value (trained window from server metadata when available,
+      else a heuristic on the model id), number = use it, k = keep current,
+      0 = omit the limit. Use this to fix guessed or stale values. Needs a
+      terminal. Options: --output N.
+
+  ocp help
+      Show this text (bare \`ocp\` prints it too and exits non-zero).
 
 Context resolution, first match wins:
-  1. server-reported: llama.cpp preset --ctx-size, LM Studio loaded/max
-     context, Unsloth loaded context
-  2. --ctx N
-  3. interactive prompt (a guess is shown; Enter accepts it, 0 omits the
-     limit) — only when writing and stdin is a terminal
-  4. limit omitted with a warning (non-interactive, no --ctx)
-  Already-configured values are never clobbered; re-ask them with
-  "ocp set-ctx <provider>".
+  1. server-reported: llama.cpp preset --ctx-size (else allocated n_ctx),
+     LM Studio loaded/max context, Unsloth loaded context
+  2. --ctx N flag (0 = omit the limit)
+  3. interactive prompt in a terminal while writing (a guess is shown;
+     Enter accepts it, 0 omits the limit)
+  4. omitted with a warning (non-interactive write, no --ctx); in report
+     mode a guess is displayed instead so you can see what apply would do
+  Already-configured values are never clobbered — re-ask them with
+  \`ocp set-ctx <provider>\`.
 
 Modality resolution:
-  - llama.cpp architecture.input_modalities is ground truth and will correct
+  - llama.cpp architecture.input_modalities is ground truth and corrects
     over/under-declared models (e.g. video stripped from text-only builds)
   - otherwise heuristics on the model id: qwen3.8 -> text+image+video,
-    qwen/gemma -> text+image, else text
-  - LM Studio embedding models are skipped
+    qwen/gemma -> text+image, else text; LM Studio VLMs -> text+image
+  - embedding models are skipped entirely
+
+New-model defaults (OpenCode only): attachment when input has more than
+text; tool_call disabled for *base* model ids; reasoning enabled for
+thinking-style ids (qwen3.5+, qwen4, muse-glimmer, *thinking*).
+
+Hermes key resolution, first match wins:
+  1. literal api_key in the entry (unless it is a placeholder like "dummy")
+  2. \${ENV_VAR} in api_key or a key_env field — read from ~/.hermes/.env
+  3. borrowed from auth.json of an opencode provider pointing at the same
+     server URL (localhost and 127.0.0.1 count as the same host)
+
+Safety:
+  - every write is atomic (tmp file + rename) and preceded by a .bak-ocp-*
+    backup; only the last 3 backups per file are kept
+  - opencode.jsonc is validated after each write; on errors they are
+    reported and ocp exits non-zero
 
 Examples:
   ocp add 3090-lan http://192.168.9.50:64980/v1 --key 4117...
@@ -151,7 +176,7 @@ Examples:
   ocp sync --target hermes      # only the Hermes fallback catalogs
   ocp add new http://10.0.0.5:64980/v1 --key ... --ctx 32768
   ocp set-ctx 3090
- `;
+`;
 
 // ---------- http ----------
 async function req(url, { method = "GET", key, body, timeout = 6000 } = {}) {
@@ -702,7 +727,7 @@ try {
   else if (cmd === "set-ctx") {
     if (!pos[1]) die("usage: ocp set-ctx <provider> — see ocp help");
     await cmdSetCtx(pos[1]);
-  } else if (cmd === "help" || cmd === "--help" || cmd === "-h") console.log(HELP);
+  } else if (cmd === "help" || cmd === "-h" || (!pos.length && (flags.help || flags.h))) console.log(HELP);
   else if (!cmd) { console.error(HELP); process.exit(1); }
   else die(`unknown command "${cmd}" — see ocp help`);
 } catch (e) { die(e.stack || e.message); }
