@@ -73,7 +73,11 @@ const loadCfg = () => {
   const raw = readFileSync(CFG, "utf8");
   const cleaned = stripJsonComments(raw);
   _cfgHadComments = cleaned.length !== raw.length;
-  try { return JSON.parse(cleaned.replace(/,(\s*[}\]])/g, "$1")); }
+  try {
+    const p = JSON.parse(cleaned.replace(/,(\s*[}\]])/g, "$1"));
+    if (!p.provider) p.provider = {}; // fresh configs have no provider section
+    return p;
+  }
   catch (e) { die(`cannot parse ${CFG}: ${e.message}`); }
 };
 const loadAuth = () => (existsSync(AUTH) ? JSON.parse(readFileSync(AUTH, "utf8")) : {});
