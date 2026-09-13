@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// ocp — manage local model providers for OpenCode and Hermes Agent.
-// Zero dependencies, Node >= 18. Run `ocp help` for full documentation.
+// provider-sync — manage local model providers for OpenCode and Hermes Agent.
+// Zero dependencies, Node >= 18. Run `provider-sync help` for full documentation.
 
 import { readFileSync, writeFileSync, existsSync, renameSync, copyFileSync, mkdirSync, readdirSync, unlinkSync } from "node:fs";
 import path from "node:path";
@@ -8,7 +8,7 @@ import os from "node:os";
 import readline from "node:readline/promises";
 
 // config file resolution mirrors OpenCode's own discovery (config.ts):
-// OCP_CONFIG override > first existing of opencode.jsonc / opencode.json /
+// PS_CONFIG override (legacy: OCP_CONFIG) > first existing of opencode.jsonc / opencode.json /
 // config.json in $OPENCODE_CONFIG_DIR or $XDG_CONFIG_HOME/opencode (~/.config/opencode)
 const CFG_DIR = process.env.OPENCODE_CONFIG_DIR || path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "opencode");
 const CFG_CANDIDATES = ["opencode.jsonc", "opencode.json", "config.json"];
@@ -16,7 +16,7 @@ function detectCfg() {
   const hit = CFG_CANDIDATES.find((f) => existsSync(path.join(CFG_DIR, f)));
   return path.join(CFG_DIR, hit || CFG_CANDIDATES[0]);
 }
-const CFG = process.env.OCP_CONFIG || detectCfg();
+const CFG = process.env.PS_CONFIG || process.env.OCP_CONFIG || detectCfg();
 const AUTH = path.join(os.homedir(), ".local/share/opencode/auth.json");
 const HERMES_CFG = path.join(os.homedir(), ".hermes/config.yaml");
 const HERMES_ENV = path.join(os.homedir(), ".hermes/.env");
@@ -61,14 +61,14 @@ function stripJsonComments(s) {
 // ---------- store ----------
 let _cfgWarned = false;
 function warnMultiCfg() {
-  if (_cfgWarned || process.env.OCP_CONFIG) return;
+  if (_cfgWarned || process.env.PS_CONFIG || process.env.OCP_CONFIG) return;
   _cfgWarned = true;
   const present = CFG_CANDIDATES.filter((f) => existsSync(path.join(CFG_DIR, f)));
-  if (present.length > 1) console.error(`note: multiple config files in ${CFG_DIR} (${present.join(", ")}); OpenCode deep-merges them — ocp edits ${path.basename(CFG)}`);
+  if (present.length > 1) console.error(`note: multiple config files in ${CFG_DIR} (${present.join(", ")}); OpenCode deep-merges them — provider-sync edits ${path.basename(CFG)}`);
 }
 let _cfgHadComments = false, _cmtWarned = false;
 const loadCfg = () => {
-  if (!existsSync(CFG)) die(`no ${CFG}\nadd a provider first: ocp add <id> <baseURL>`);
+  if (!existsSync(CFG)) die(`no ${CFG}\nadd a provider first: provider-sync add <id> <baseURL>`);
   warnMultiCfg();
   const raw = readFileSync(CFG, "utf8");
   const cleaned = stripJsonComments(raw);
@@ -87,20 +87,21 @@ function saveJson(file, obj) {
   mkdirSync(path.dirname(file), { recursive: true });
   if (existsSync(file)) {
     const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "_").slice(0, 15);
-    copyFileSync(file, file + ".bak-ocp-" + stamp);
+    copyFileSync(file, file + ".bak-provider-sync-" + stamp);
     try {
+      const base = path.basename(file);
       const baks = readdirSync(path.dirname(file))
-        .filter((f) => f.startsWith(path.basename(file) + ".bak-ocp-"))
+        .filter((f) => f.startsWith(base + ".bak-provider-sync-") || f.startsWith(base + ".bak-ocp-")) // legacy prefix
         .sort();
       for (const f of baks.slice(0, -3)) unlinkSync(path.join(path.dirname(file), f));
     } catch {}
   }
-  const tmp = file + ".tmp-ocp";
+  const tmp = file + ".tmp-provider-sync";
   writeFileSync(tmp, JSON.stringify(obj, null, 2) + "\n");
   renameSync(tmp, file);
 }
 const saveCfg = (c) => {
-  if (_cfgHadComments && !_cmtWarned) { _cmtWarned = true; console.error("note: comments in the config file are not preserved by ocp writes"); }
+  if (_cfgHadComments && !_cmtWarned) { _cmtWarned = true; console.error("note: comments in the config file are not preserved by provider-sync writes"); }
   saveJson(CFG, c);
 };
 const saveAuth = (a) => saveJson(AUTH, a);
@@ -114,24 +115,24 @@ const numFlag = (v) => {
 };
 
 // ---------- help ----------
-const HELP = `ocp — manage local model providers for OpenCode (and Hermes Agent)
+const HELP = `provider-sync — manage local model providers for OpenCode (and Hermes Agent)
 
 Zero dependencies; requires Node >= 18 (built-in fetch).
-Run \`ocp\`, \`ocp help\`, \`-h\` or \`--help\` to see this text again.
+Run \`provider-sync\`, \`provider-sync help\`, \`-h\` or \`--help\` to see this text again.
 
 Files:
   config   $OPENCODE_CONFIG_DIR or ~/.config/opencode — first existing of
            opencode.jsonc, opencode.json, config.json (same discovery as
-           OpenCode itself; override with OCP_CONFIG=/path/to/file)
+           OpenCode itself; override with PS_CONFIG=/path/to/file)
   keys     ~/.local/share/opencode/auth.json   API keys, one per provider id
   hermes   ~/.hermes/config.yaml               custom_providers (if installed)
            ~/.hermes/.env                      key source for Hermes providers
 
 Commands:
-  ocp list
+  provider-sync list
       List configured providers with model counts and key status.
 
-  ocp add <id> <baseURL> [options]
+  provider-sync add <id> <baseURL> [options]
       Register or update a provider. The server type is auto-detected:
       llama.cpp (preset --ctx-size + per-model architecture), LM Studio
       (/api/v0/models), Unsloth UI (login + persistent API key) or any
@@ -141,7 +142,7 @@ Commands:
       are kept when the server reports nothing. Re-running add against a
       moved server re-points baseURL and reconciles the model list.
       Key resolution: --key K > existing auth.json key for <id>. For an
-      Unsloth UI with neither, pass --username U --password P: ocp logs in
+      Unsloth UI with neither, pass --username U --password P: provider-sync logs in
       and creates (and stores) a persistent API key named after <id>.
       Options:
         --name N          display name (default: existing value, else <id>)
@@ -149,7 +150,7 @@ Commands:
         --username U      Unsloth UI login (together with --password P)
         --password P
         --ctx N           ctx for models whose server reports none
-                          (0 = omit the limit). Without it, ocp asks
+                          (0 = omit the limit). Without it, provider-sync asks
                           interactively in a terminal; with --dry-run a
                           guess is shown instead.
         --output N        max output tokens written into new limits
@@ -157,13 +158,13 @@ Commands:
         --dry-run         report what would change; writes nothing and
                           creates no API key
 
-  ocp sync [--apply] [--target all|opencode|hermes] [--provider ID]
+  provider-sync sync [--apply] [--target all|opencode|hermes] [--provider ID]
       Check configured providers against their servers: new/removed models,
       ctx changes, modality corrections. Offline or auth-failing servers are
       reported and skipped; disabled_providers in the config are ignored.
       Without --apply nothing is written — the safe default for a status
       check (ctx of brand-new models is shown as a guess). With --apply in
-      a terminal, ocp may ask interactively about ctx it cannot determine.
+      a terminal, provider-sync may ask interactively about ctx it cannot determine.
       Targets:
         opencode  providers in the OpenCode config file (default when --provider set)
         hermes    custom_providers in ~/.hermes/config.yaml — the offline
@@ -174,7 +175,7 @@ Commands:
         all       both (default)
       Options: --provider ID (opencode target only), --ctx N, --output N.
 
-  ocp set-ctx <provider>
+  provider-sync set-ctx <provider>
       Interactively re-ask the context window for every model whose server
       reports no ctx (models absent from the server are skipped). Enter =
       best known value (trained window from server metadata when available,
@@ -182,8 +183,8 @@ Commands:
       0 = omit the limit. Use this to fix guessed or stale values. Needs a
       terminal. Options: --output N.
 
-  ocp help
-      Show this text (bare \`ocp\` prints it too and exits non-zero).
+  provider-sync help
+      Show this text (bare \`provider-sync\` prints it too and exits non-zero).
 
 Context resolution, first match wins:
   1. server-reported: llama.cpp preset --ctx-size (else allocated n_ctx),
@@ -194,7 +195,7 @@ Context resolution, first match wins:
   4. omitted with a warning (non-interactive write, no --ctx); in report
      mode a guess is displayed instead so you can see what apply would do
   Already-configured values are never clobbered — re-ask them with
-  \`ocp set-ctx <provider>\`.
+  \`provider-sync set-ctx <provider>\`.
 
 Modality resolution:
   - llama.cpp architecture.input_modalities is ground truth and corrects
@@ -214,21 +215,21 @@ Hermes key resolution, first match wins:
      server URL (localhost and 127.0.0.1 count as the same host)
 
 Safety:
-  - every write is atomic (tmp file + rename) and preceded by a .bak-ocp-*
-    backup; only the last 3 backups per file are kept
+  - every write is atomic (tmp file + rename) and preceded by a
+    .bak-provider-sync-* backup; only the last 3 backups per file are kept
   - the config file is validated after each write; on errors they are
-    reported and ocp exits non-zero
+    reported and provider-sync exits non-zero
 
 Examples:
-  ocp add 3090-lan http://192.168.9.50:64980/v1 --key 4117...
-  ocp add helen http://100.64.0.6:8888/v1 --username unsloth --password ***
-  ocp add local http://127.0.0.1:8080/v1 --dry-run
-  ocp sync                      # status check, opencode + hermes, nothing written
-  ocp sync --apply              # apply all pending changes
-  ocp sync --apply --provider 3090
-  ocp sync --target hermes      # only the Hermes fallback catalogs
-  ocp add new http://10.0.0.5:64980/v1 --key ... --ctx 32768
-  ocp set-ctx 3090
+  provider-sync add 3090-lan http://192.168.9.50:64980/v1 --key 4117...
+  provider-sync add helen http://100.64.0.6:8888/v1 --username unsloth --password ***
+  provider-sync add local http://127.0.0.1:8080/v1 --dry-run
+  provider-sync sync                      # status check, opencode + hermes, nothing written
+  provider-sync sync --apply              # apply all pending changes
+  provider-sync sync --apply --provider 3090
+  provider-sync sync --target hermes      # only the Hermes fallback catalogs
+  provider-sync add new http://10.0.0.5:64980/v1 --key ... --ctx 32768
+  provider-sync set-ctx 3090
 `;
 
 // ---------- http ----------
@@ -291,7 +292,7 @@ async function fetchModels(pr, base, key) {
   }
   if (pr.kind === "unsloth") {
     const r = await req(v1Of(base) + "/models", { key });
-    if (r.status === 401) throw new Error("401: no valid API key in auth.json (ocp add <id> <url> --username U --password P)");
+    if (r.status === 401) throw new Error("401: no valid API key in auth.json (provider-sync add <id> <url> --username U --password P)");
     if (r.status !== 200) throw new Error("/v1/models HTTP " + r.status);
     return (r.json?.data || []).map((m) => ({ id: m.id, ctx: nz(m.context_length), input: null }));
   }
@@ -478,7 +479,7 @@ function parseModelsBlock(lines, a, b) {
     const m = l.match(/^ {6}(.+?):(?:\s+(\{.*\}))?\s*$/);
     if (!m) { i++; continue; }
     const id = deq(m[1]);
-    let ctx = null, extra = false; // extra: fields ocp does not preserve (only context_length is kept)
+    let ctx = null, extra = false; // extra: fields provider-sync does not preserve (only context_length is kept)
     if (m[2]) {
       const ic = m[2].match(/context_length:\s*(\d+)/);
       if (ic) ctx = parseInt(ic[1]);
@@ -588,16 +589,16 @@ async function syncHermes({ apply, ocCfg, ocAuth }) {
     }
   }
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "_").slice(0, 15);
-  copyFileSync(HERMES_CFG, HERMES_CFG + ".bak-ocp-" + stamp);
+  copyFileSync(HERMES_CFG, HERMES_CFG + ".bak-provider-sync-" + stamp);
   try {
     for (const f of readdirSync(path.dirname(HERMES_CFG))
-      .filter((f) => /^config\.yaml\.bak-ocp-\d{8}_\d{6}$/.test(f)).sort().slice(0, -3))
+      .filter((f) => /^config\.yaml\.bak-(?:provider-sync|ocp)-\d{8}_\d{6}$/.test(f)).sort().slice(0, -3)) // legacy prefix
       unlinkSync(path.join(path.dirname(HERMES_CFG), f));
   } catch {}
-  const tmp = HERMES_CFG + ".tmp-ocp";
+  const tmp = HERMES_CFG + ".tmp-provider-sync";
   writeFileSync(tmp, lines.join("\n"));
   renameSync(tmp, HERMES_CFG);
-  console.log(`  APPLIED ${changes} change(s) — backup at config.yaml.bak-ocp-${stamp}`);
+  console.log(`  APPLIED ${changes} change(s) — backup at config.yaml.bak-provider-sync-${stamp}`);
 }
 
 // ---------- validation ----------
@@ -628,7 +629,7 @@ async function cmdSetCtx(pid) {
   if (!process.stdin.isTTY) die("set-ctx needs an interactive terminal");
   const cfg = loadCfg();
   const p = cfg.provider[pid];
-  if (!p) die(`unknown provider "${pid}" (see ocp list)`);
+  if (!p) die(`unknown provider "${pid}" (see provider-sync list)`);
   const base = p.options?.baseURL;
   const key = loadAuth()[pid]?.key || null;
   const pr = await probe(base, key);
@@ -784,14 +785,14 @@ async function cmdSync() {
 try {
   if (cmd === "list") cmdList();
   else if (cmd === "add") {
-    if (!pos[1] || !pos[2]) die("usage: ocp add <id> <baseURL> [options] — see ocp help");
+    if (!pos[1] || !pos[2]) die("usage: provider-sync add <id> <baseURL> [options] — see provider-sync help");
     await cmdAdd(pos[1], pos[2]);
   } else if (cmd === "sync") await cmdSync();
   else if (cmd === "set-ctx") {
-    if (!pos[1]) die("usage: ocp set-ctx <provider> — see ocp help");
+    if (!pos[1]) die("usage: provider-sync set-ctx <provider> — see provider-sync help");
     await cmdSetCtx(pos[1]);
   } else if (cmd === "help" || cmd === "-h" || (!pos.length && (flags.help || flags.h))) console.log(HELP);
   else if (!cmd) { console.error(HELP); process.exit(1); }
-  else die(`unknown command "${cmd}" — see ocp help`);
+  else die(`unknown command "${cmd}" — see provider-sync help`);
 } catch (e) { die(e.stack || e.message); }
 process.exit(process.exitCode ?? 0);

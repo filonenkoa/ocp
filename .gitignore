@@ -1,6 +1,9 @@
 node_modules/
 *.log
 .DS_Store
-# local config backups created by ocp (never belong to the repo)
+# local config backups created by provider-sync (never belong to the repo)
+*.bak-provider-sync-*
+*.tmp-provider-sync
+# legacy ocp prefixes (still cleaned up by the tool)
 *.bak-ocp-*
 *.tmp-ocp
